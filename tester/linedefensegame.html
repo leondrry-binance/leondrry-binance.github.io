@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Line Defense</title>
+<style>
+:root{--bg:#10151c;--panel:#1a222d;--panel2:#222d3b;--ink:#e8edf3;--muted:#8b98a8;--accent:#4cc9f0;--good:#6ee7a0;--bad:#ff6b6b;--gold:#ffd166}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
+#app{width:100%;max-width:980px;padding:10px 12px 24px}
+h1{font-size:18px;margin:6px 0 8px;letter-spacing:.5px}
+h1 small{color:var(--muted);font-weight:400;font-size:12px;margin-left:8px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px}
+.stat{background:var(--panel);border-radius:8px;padding:6px 12px;font-weight:600;min-width:92px}
+.stat span{color:var(--muted);font-weight:400;margin-right:6px}
+#hp b{color:var(--bad)}#gold b{color:var(--gold)}#sides b{color:var(--accent)}
+button{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid #2f3d50;border-radius:8px;padding:7px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--accent)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);color:#06222c;border-color:var(--accent);font-weight:700}
+button.primary kbd{background:rgba(0,0,0,.18);border-color:transparent;color:#06222c}
+button.on{border-color:var(--good);color:var(--good)}
+.grow{flex:1}
+#wrap{position:relative;line-height:0}
+canvas{width:100%;height:auto;background:#1a2340;border-radius:10px;touch-action:manipulation;display:block}
+.shop{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.shop button{display:flex;flex-direction:column;align-items:flex-start;min-width:150px;text-align:left}
+.shop button.sel{border-color:var(--good);box-shadow:0 0 0 1px var(--good) inset}
+.shop .n{font-weight:700}.shop .c{color:var(--gold)}.shop .d{color:var(--muted);font-size:12px}
+#info{margin-top:10px;background:var(--panel);border-radius:10px;padding:10px 12px;min-height:56px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+#info .t{flex:1;min-width:200px}
+.help{color:var(--muted);font-size:12px;margin-top:10px}
+kbd{background:var(--panel2);border:1px solid #2f3d50;border-radius:4px;padding:0 5px;font-size:11px}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>LINE DEFENSE <small>musuh menyerbu dari kiri dan kanan, jaga markas di tengah</small></h1>
+  <div class="bar">
+    <div class="stat" id="hp"><span>Markas</span><b>150</b></div>
+    <div class="stat" id="gold"><span>Emas</span><b>0</b></div>
+    <div class="stat" id="wave"><span>Gelombang</span><b>0/15</b></div>
+    <div class="stat" id="sides" title="Sisa musuh: kiri | kanan"><span>Kiri | Kanan</span><b>0 | 0</b></div>
+    <div class="grow"></div>
+    <button id="btnStart" class="primary">Mulai gelombang <kbd>Spasi</kbd></button>
+    <button id="btnAuto" title="Mulai gelombang berikutnya otomatis">Auto: mati</button>
+    <button id="btnSpeed" title="Ganti kecepatan (F)">Kecepatan 1x</button>
+    <button id="btnPause" title="Jeda (P)">Jeda</button>
+  </div>
+  <div id="wrap"><canvas id="c"></canvas></div>
+  <div class="shop" id="shop"></div>
+  <div id="info"></div>
+  <div class="help">
+    Pilih pasukan (<kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>) lalu klik salah satu titik pos di kiri atau kanan markas. Klik pasukan untuk upgrade (<kbd>U</kbd>) atau jual (<kbd>S</kbd>).
+    Klik markas untuk memperkuatnya, <kbd>R</kbd> memperbaiki markas. <kbd>Esc</kbd> / klik kanan membatalkan pilihan.
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ---------- konstanta ---------- */
+const W = 960, H = 540, CX = W / 2, GY = 412, MAXWAVE = 15;
+const SLOTD = [62, 122, 182, 242, 302];     // jarak pos dari tengah markas
+const CASTLE_HW = 34;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+cv.width = W; cv.height = H;
+
+const UT = {
+  soldier: { name: 'Prajurit', cost: 40,  hp: 170, dmg: 11,  rate: .7,  reach: 30, col: '#6ea8ff', desc: 'Menahan musuh di garis depan' },
+  archer:  { name: 'Pemanah',  cost: 60,  hp: 60,  dmg: 11,  rate: .55, range: 230, col: '#6ee7a0', speed: 560, desc: 'Menembak jauh ke dua sisi' },
+  mage:    { name: 'Penyihir', cost: 110, hp: 65,  dmg: 30, rate: 1.7, range: 190, splash: 48, col: '#c58bff', speed: 360, desc: 'Ledakan mengenai banyak musuh' }
+};
+const ET = {
+  grunt:  { hp: 42,   spd: 46, dmg: 6,  rate: .9,  rew: 6,   r: 11, col: '#ff9f68' },
+  runner: { hp: 26,   spd: 92, dmg: 4,  rate: .7,  rew: 7,   r: 9,  col: '#ffd166' },
+  brute:  { hp: 210,  spd: 30, dmg: 16, rate: 1.2, rew: 18,  r: 16, col: '#b388ff' },
+  spear:  { hp: 32,   spd: 48, dmg: 5,  rate: 1,   rew: 10,   r: 10, col: '#ff6b9c', range: 125 },
+  boss:   { hp: 1100, spd: 24, dmg: 34, rate: 1.4, rew: 120, r: 24, col: '#ff5d73' }
+};
+const KEYS = { '1': 'soldier', '2': 'archer', '3': 'mage' };
+
+const ustats = d => {
+  const b = UT[d.type], l = d.lvl - 1;
+  return {
+    dmg: b.dmg * (1 + .5 * l), hp: Math.round(b.hp * (1 + .4 * l)),
+    range: b.range ? b.range * (1 + .06 * l) : 0, rate: b.rate * (1 - .06 * l),
+    reach: b.reach || 0, splash: b.splash ? b.splash * (1 + .08 * l) : 0
+  };
+};
+const upCost = d => Math.round(UT[d.type].cost * .8 * d.lvl);
+const sellVal = d => Math.floor(d.spent * .6);
+const castleArrow = () => 6 + 4 * (G.castle.lvl - 1);
+const castleUpCost = () => 90 * G.castle.lvl;
+const REPAIR_COST = 35, REPAIR_HP = 50;
+
+/* ---------- state ---------- */
+const G = {};
+let speed = 1, paused = false, autoOn = false, hover = null, uid = 1;
+
+function reset() {
+  Object.assign(G, {
+    gold: 190, castle: { hp: 150, max: 150, lvl: 1, cd: 0, flash: 0 },
+    wave: 0, active: false, queue: [], spawnT: 0, spawnGap: .7,
+    enemies: [], def: [], projs: [], fx: [], build: null, sel: null,
+    over: false, won: false, autoT: -1, time: 0, banner: null
+  });
+  paused = false; refresh();
+}
+
+/* ---------- gelombang ---------- */
+function startWave() {
+  if (G.active || G.over || G.won || G.wave >= MAXWAVE) return;
+  const n = ++G.wave, list = [];
+  const add = (type, k) => { for (let i = 0; i < k; i++) list.push(type); };
+  add('grunt', 6 + n * 2);
+  if (n >= 2) add('runner', 2 + n);
+  if (n >= 4) add('brute', Math.floor((n - 2) / 2));
+  if (n >= 6) add('spear', Math.floor((n - 4) / 1.5));
+  for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
+  if (n % 5 === 0) add('boss', n / 5);
+  const bias = [.5, .72, .3, .5, .8, .2, .5, .65, .35][n % 9];
+  let flip = 0;
+  G.queue = list.map(type => ({ type, side: type === 'boss' ? ((flip++ % 2) ? 1 : -1) : (Math.random() < bias ? -1 : 1) }));
+  G.spawnT = 0; G.spawnGap = Math.max(.35, .8 - n * .025);
+  G.active = true; G.autoT = -1;
+  G.banner = { text: 'Gelombang ' + n, t: 1.8 };
+  refresh();
+}
+
+function spawn(q) {
+  const b = ET[q.type], n = G.wave;
+  const sc = q.type === 'boss' ? 1 + .1 * (n - 1) : 1 + .14 * (n - 1);
+  const hp = Math.round(b.hp * sc);
+  G.enemies.push({ id: uid++, type: q.type, side: q.side, x: q.side < 0 ? -30 : W + 30, hp, max: hp,
+    spd: b.spd, dmg: b.dmg, rate: b.rate, rew: b.rew, r: b.r, col: b.col, range: b.range || 0,
+    cd: 0, flash: 0, atk: false, dead: false });
+}
+
+function hurt(e, dmg) {
+  if (e.dead) return;
+  e.hp -= dmg; e.flash = .08;
+  if (e.hp <= 0) {
+    e.dead = true; G.gold += e.rew;
+    G.fx.push({ x: e.x, y: GY - e.r * 2 - 10, t: .8, text: '+' + e.rew, col: '#ffd166' });
+    refresh();
+  }
+}
+
+/* ---------- update ---------- */
+function update(dt) {
+  if (G.over || G.won) return;
+  G.time += dt;
+  if (G.banner) { G.banner.t -= dt; if (G.banner.t <= 0) G.banner = null; }
+  const C = G.castle; C.flash = Math.max(0, C.flash - dt);
+
+  if (G.active && G.queue.length) {
+    G.spawnT -= dt;
+    if (G.spawnT <= 0) { spawn(G.queue.shift()); G.spawnT = G.spawnGap; }
+  }
+
+  // musuh: bergerak ke tengah, berhenti di depan pasukan terdekat atau markas
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    e.flash = Math.max(0, e.flash - dt); e.cd -= dt;
+    const dc = Math.abs(e.x - CX);
+    let tgt = null, tdist = CASTLE_HW;
+    for (const d of G.def) if (d.side === e.side && d.dist < dc + 2 && d.dist > tdist) { tgt = d; tdist = d.dist; }
+    const stopAt = e.range || (e.r + 14);
+    if (dc - tdist <= stopAt) {
+      e.atk = true;
+      if (e.cd <= 0) {
+        e.cd = e.rate;
+        if (tgt) { tgt.hp -= e.dmg; tgt.flash = .1; }
+        else {
+          C.hp -= e.dmg; C.flash = .12;
+          G.fx.push({ x: CX + (Math.random() - .5) * 30, y: GY - 96, t: .8, text: '-' + e.dmg, col: '#ff6b6b' });
+        }
+        if (e.range) G.fx.push({ line: true, x: e.x, y: GY - e.r - 8, x2: tgt ? tgt.x : CX - e.side * CASTLE_HW, y2: GY - 26, t: .12, col: '#ff9ab8' });
+      }
+    } else {
+      e.atk = false;
+      let blocked = false;
+      for (const o of G.enemies) {
+        if (o === e || o.dead || o.side !== e.side) continue;
+        const diff = dc - Math.abs(o.x - CX);
+        if (diff > 0 && diff < e.r + o.r + 2) { blocked = true; break; }
+      }
+      if (!blocked) e.x += -e.side * e.spd * dt;
+    }
+  }
+
+  // pasukan
+  for (const d of G.def) {
+    d.cd -= dt; d.flash = Math.max(0, d.flash - dt); d.swing = Math.max(0, d.swing - dt);
+    const s = ustats(d);
+    if (d.type === 'soldier') {
+      let tgt = null, best = 1e9;
+      for (const e of G.enemies) {
+        if (e.dead || e.side !== d.side) continue;
+        const dist = Math.abs(e.x - d.x);
+        if (dist <= s.reach + e.r && dist < best && Math.abs(e.x - CX) >= d.dist - 6) { best = dist; tgt = e; }
+      }
+      if (tgt && d.cd <= 0) { d.cd = s.rate; d.swing = .18; hurt(tgt, s.dmg); }
+    } else {
+      let tgt = null, best = 1e9;
+      for (const e of G.enemies) {
+        if (e.dead) continue;
+        const dx = Math.abs(e.x - d.x), dcn = Math.abs(e.x - CX);
+        if (dx <= s.range && dcn < best) { best = dcn; tgt = e; }
+      }
+      if (tgt && d.cd <= 0) {
+        d.cd = s.rate; d.swing = .12;
+        G.projs.push({ x: d.x, y: GY - 28, target: tgt, speed: UT[d.type].speed, dmg: s.dmg, splash: s.splash, col: UT[d.type].col, big: !!s.splash });
+      }
+    }
+  }
+
+  // panah markas
+  C.cd -= dt;
+  if (C.cd <= 0) {
+    let tgt = null, best = 1e9;
+    for (const e of G.enemies) { const dcn = Math.abs(e.x - CX); if (!e.dead && dcn <= 280 && dcn < best) { best = dcn; tgt = e; } }
+    if (tgt) { C.cd = .9; G.projs.push({ x: CX, y: GY - 92, target: tgt, speed: 520, dmg: castleArrow(), splash: 0, col: '#ffe9a8' }); }
+  }
+
+  // proyektil
+  for (const p of G.projs) {
+    const e = p.target;
+    if (e.dead) { p.gone = true; continue; }
+    const ty = GY - e.r - 4, dx = e.x - p.x, dy = ty - p.y, dist = Math.hypot(dx, dy), step = p.speed * dt;
+    if (dist <= step + e.r * .6) {
+      p.gone = true;
+      if (p.splash) {
+        for (const o of G.enemies) if (!o.dead && Math.abs(o.x - e.x) <= p.splash) hurt(o, p.dmg);
+        G.fx.push({ ring: p.splash, x: e.x, y: GY - 10, t: .25, col: p.col });
+      } else hurt(e, p.dmg);
+    } else { p.x += dx / dist * step; p.y += dy / dist * step; }
+  }
+
+  for (const f of G.fx) f.t -= dt;
+  G.enemies = G.enemies.filter(e => !e.dead);
+  G.projs = G.projs.filter(p => !p.gone);
+  G.fx = G.fx.filter(f => f.t > 0);
+  const before = G.def.length;
+  G.def = G.def.filter(d => d.hp > 0);
+  if (G.def.length !== before) { if (G.sel !== 'castle' && G.sel && !G.def.includes(G.sel)) G.sel = null; refresh(); }
+
+  if (C.hp <= 0) { C.hp = 0; G.over = true; refresh(); return; }
+
+  if (G.active && !G.queue.length && !G.enemies.length) {
+    G.active = false;
+    G.gold += 28 + G.wave * 5;
+    for (const d of G.def) d.hp = ustats(d).hp;
+    if (G.wave >= MAXWAVE) G.won = true; else if (autoOn) G.autoT = 3;
+    refresh();
+  }
+  if (G.autoT >= 0) { G.autoT -= dt; if (G.autoT < 0) { G.autoT = -1; startWave(); } }
+}
+
+/* ---------- aksi pemain ---------- */
+const defAt = (side, i) => G.def.find(d => d.side === side && d.slot === i);
+function buildAt(side, i, type) {
+  const b = UT[type];
+  if (!b || i < 0 || i >= SLOTD.length || defAt(side, i) || G.gold < b.cost) return false;
+  G.gold -= b.cost;
+  const d = { type, side, slot: i, dist: SLOTD[i], x: CX + side * SLOTD[i], lvl: 1, hp: b.hp, cd: 0, swing: 0, flash: 0, spent: b.cost };
+  G.def.push(d); G.sel = d; refresh();
+  return true;
+}
+function upgradeSel() {
+  if (G.sel === 'castle') return castleUpgrade();
+  const d = G.sel; if (!d || d.lvl >= 3) return;
+  const c = upCost(d); if (G.gold < c) return;
+  const before = ustats(d).hp;
+  G.gold -= c; d.spent += c; d.lvl++; d.hp += ustats(d).hp - before; refresh();
+}
+function sellSel() {
+  const d = G.sel; if (!d || d === 'castle') return;
+  G.gold += sellVal(d); G.def = G.def.filter(x => x !== d); G.sel = null; refresh();
+}
+function castleUpgrade() {
+  const C = G.castle, c = castleUpCost();
+  if (C.lvl >= 3 || G.gold < c) return;
+  G.gold -= c; C.lvl++; C.max += 60; C.hp = Math.min(C.max, C.hp + 60); refresh();
+}
+function castleRepair() {
+  const C = G.castle;
+  if (C.hp >= C.max || G.gold < REPAIR_COST || G.over || G.won) return;
+  G.gold -= REPAIR_COST; C.hp = Math.min(C.max, C.hp + REPAIR_HP); refresh();
+}
+function setBuild(type) { G.build = G.build === type ? null : type; if (G.build) G.sel = null; refresh(); }
+
+/* ---------- input ---------- */
+function toWorld(ev) {
+  const r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * W / r.width, y: (ev.clientY - r.top) * H / r.height };
+}
+function slotAt(p) {
+  if (p.y < GY - 110 || p.y > GY + 30) return null;
+  for (const side of [-1, 1]) for (let i = 0; i < SLOTD.length; i++) {
+    if (Math.abs(p.x - (CX + side * SLOTD[i])) <= 26) return { side, i };
+  }
+  return null;
+}
+cv.addEventListener('pointermove', ev => { hover = slotAt(toWorld(ev)); });
+cv.addEventListener('pointerleave', () => { hover = null; });
+cv.addEventListener('contextmenu', ev => { ev.preventDefault(); G.build = null; refresh(); });
+cv.addEventListener('pointerdown', ev => {
+  if (ev.button === 2) return;
+  const p = toWorld(ev); hover = slotAt(p);
+  if (G.over || G.won) { reset(); return; }
+  const s = hover;
+  if (s) {
+    const d = defAt(s.side, s.i);
+    if (d) { G.sel = d; G.build = null; refresh(); }
+    else if (G.build) buildAt(s.side, s.i, G.build);
+    else { G.sel = null; refresh(); }
+  } else if (Math.abs(p.x - CX) <= CASTLE_HW + 8 && p.y > GY - 110 && p.y < GY + 10) {
+    G.sel = 'castle'; G.build = null; refresh();
+  } else { G.sel = null; refresh(); }
+});
+addEventListener('keydown', ev => {
+  const k = ev.key.toLowerCase();
+  if (KEYS[k]) setBuild(KEYS[k]);
+  else if (k === ' ') { ev.preventDefault(); startWave(); }
+  else if (k === 'u') upgradeSel();
+  else if (k === 's') sellSel();
+  else if (k === 'r') castleRepair();
+  else if (k === 'p') togglePause();
+  else if (k === 'f') cycleSpeed();
+  else if (k === 'escape') { G.build = null; G.sel = null; refresh(); }
+});
+
+const $ = id => document.getElementById(id);
+function togglePause() { paused = !paused; refresh(); }
+function cycleSpeed() { speed = speed % 3 + 1; refresh(); }
+$('btnStart').onclick = startWave;
+$('btnPause').onclick = togglePause;
+$('btnSpeed').onclick = cycleSpeed;
+$('btnAuto').onclick = () => { autoOn = !autoOn; if (!autoOn) G.autoT = -1; refresh(); };
+
+/* ---------- UI (DOM) ---------- */
+const shop = $('shop');
+for (const [k, b] of Object.entries(UT)) {
+  const el = document.createElement('button');
+  el.dataset.type = k;
+  el.innerHTML = `<span class="n">${b.name} <span class="c">${b.cost}</span></span><span class="d">${b.desc}</span>`;
+  el.onclick = () => setBuild(k);
+  shop.appendChild(el);
+}
+function hud() {
+  $('hp').lastElementChild.textContent = Math.ceil(G.castle.hp) + '/' + G.castle.max;
+  $('gold').lastElementChild.textContent = G.gold;
+  $('wave').lastElementChild.textContent = G.wave + '/' + MAXWAVE;
+  let l = 0, r = 0;
+  for (const q of G.queue) q.side < 0 ? l++ : r++;
+  for (const e of G.enemies) e.side < 0 ? l++ : r++;
+  $('sides').lastElementChild.textContent = l + ' | ' + r;
+}
+function refresh() {
+  hud();
+  $('btnStart').disabled = G.active || G.over || G.won || G.wave >= MAXWAVE;
+  $('btnStart').firstChild.textContent = G.wave === 0 ? 'Mulai gelombang ' : 'Gelombang berikutnya ';
+  $('btnAuto').textContent = 'Auto: ' + (autoOn ? 'nyala' : 'mati'); $('btnAuto').classList.toggle('on', autoOn);
+  $('btnSpeed').textContent = 'Kecepatan ' + speed + 'x';
+  $('btnPause').textContent = paused ? 'Lanjut' : 'Jeda'; $('btnPause').classList.toggle('on', paused);
+  for (const el of shop.children) {
+    el.classList.toggle('sel', G.build === el.dataset.type);
+    el.disabled = G.gold < UT[el.dataset.type].cost && G.build !== el.dataset.type;
+  }
+  const info = $('info'), C = G.castle, sel = G.sel;
+  const repairBtn = `<button id="bRep" ${C.hp >= C.max || G.gold < REPAIR_COST ? 'disabled' : ''}>Perbaiki +${REPAIR_HP} (${REPAIR_COST}) <kbd>R</kbd></button>`;
+  if (sel === 'castle') {
+    info.innerHTML = `<div class="t"><b>Markas</b> level ${C.lvl}/3 &middot; HP ${Math.ceil(C.hp)}/${C.max} &middot; panah ${castleArrow()} damage</div>`
+      + repairBtn + `<button id="bUp" ${C.lvl >= 3 || G.gold < castleUpCost() ? 'disabled' : ''}>${C.lvl >= 3 ? 'Level maks' : 'Perkuat ' + castleUpCost()} <kbd>U</kbd></button>`;
+    $('bUp').onclick = castleUpgrade; $('bRep').onclick = castleRepair;
+  } else if (sel) {
+    const s = ustats(sel), b = UT[sel.type];
+    info.innerHTML = `<div class="t"><b>${b.name}</b> level ${sel.lvl}/3 (${sel.side < 0 ? 'kiri' : 'kanan'}) &middot; damage ${s.dmg.toFixed(0)} &middot; HP ${Math.ceil(sel.hp)}/${s.hp}`
+      + (s.range ? ` &middot; jangkauan ${Math.round(s.range)}` : '') + (s.splash ? ` &middot; area ${Math.round(s.splash)}` : '') + `</div>`
+      + `<button id="bUp" ${sel.lvl >= 3 || G.gold < upCost(sel) ? 'disabled' : ''}>${sel.lvl >= 3 ? 'Level maks' : 'Upgrade ' + upCost(sel)} <kbd>U</kbd></button>`
+      + `<button id="bSell">Jual +${sellVal(sel)} <kbd>S</kbd></button>`;
+    $('bUp').onclick = upgradeSel; $('bSell').onclick = sellSel;
+  } else if (G.build) {
+    const b = UT[G.build];
+    info.innerHTML = `<div class="t"><b>${b.name}</b> &mdash; ${b.desc}. Klik titik pos kosong di kiri atau kanan markas.</div>`;
+  } else {
+    info.innerHTML = `<div class="t" style="color:var(--muted)">Pilih pasukan di atas, atau klik pasukan atau markas yang sudah ada.</div>` + repairBtn;
+    $('bRep').onclick = castleRepair;
+  }
+}
+
+/* ---------- gambar ---------- */
+const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+(function buildBg() {
+  const b = bg.getContext('2d');
+  let g = b.createLinearGradient(0, 0, 0, GY);
+  g.addColorStop(0, '#0f1733'); g.addColorStop(.55, '#3a3a6b'); g.addColorStop(1, '#e98a5c');
+  b.fillStyle = g; b.fillRect(0, 0, W, H);
+  for (let i = 0; i < 60; i++) { b.fillStyle = `rgba(255,255,255,${.15 + (i * 37 % 10) / 25})`; b.fillRect((i * 173) % W, (i * 71) % 190, 1.5, 1.5); }
+  g = b.createRadialGradient(CX, GY - 20, 10, CX, GY - 20, 260);
+  g.addColorStop(0, 'rgba(255,200,130,.55)'); g.addColorStop(1, 'rgba(255,200,130,0)');
+  b.fillStyle = g; b.fillRect(0, 0, W, H);
+  const hill = (col, base, amp, f, ph) => {
+    b.fillStyle = col; b.beginPath(); b.moveTo(0, GY);
+    for (let x = 0; x <= W; x += 8) b.lineTo(x, base - amp * (Math.sin(x * f + ph) * .5 + .5) - amp * .3 * Math.sin(x * f * 2.3 + ph));
+    b.lineTo(W, GY); b.closePath(); b.fill();
+  };
+  hill('#2a2c55', GY - 40, 70, .006, 1); hill('#1b2142', GY - 20, 46, .011, 4);
+  g = b.createLinearGradient(0, GY - 6, 0, H);
+  g.addColorStop(0, '#34502f'); g.addColorStop(.12, '#27402a'); g.addColorStop(1, '#16251a');
+  b.fillStyle = g; b.fillRect(0, GY - 6, W, H - GY + 6);
+  b.fillStyle = 'rgba(0,0,0,.18)'; b.fillRect(0, GY + 2, W, 3);
+})();
+
+function ell(x, y, rx, ry, fill, stroke, lw) {
+  ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.lineWidth = lw || 1.5; ctx.strokeStyle = stroke; ctx.stroke(); }
+}
+function line(x1, y1, x2, y2, col, w) {
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.lineWidth = w; ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.stroke();
+}
+function bar(x, y, w, f, col) {
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x - w / 2, y, w, 4);
+  ctx.fillStyle = col; ctx.fillRect(x - w / 2, y, w * Math.max(0, f), 4);
+}
+
+function drawCastle() {
+  const C = G.castle, x = CX, fl = C.flash > 0;
+  ctx.fillStyle = fl ? '#ffd0d0' : '#8892a6'; ctx.fillRect(x - 34, GY - 84, 68, 84);
+  ctx.fillStyle = fl ? '#ffb0b0' : '#9aa4b8';
+  for (let i = 0; i < 5; i++) ctx.fillRect(x - 34 + i * 14, GY - 94, 10, 12);
+  ctx.fillStyle = 'rgba(0,0,0,.18)';
+  for (let r = 0; r < 5; r++) ctx.fillRect(x - 34, GY - 70 + r * 16, 68, 2);
+  ctx.fillStyle = '#2b2233'; ctx.beginPath(); ctx.moveTo(x - 11, GY); ctx.lineTo(x - 11, GY - 26); ctx.arc(x, GY - 26, 11, Math.PI, 0); ctx.lineTo(x + 11, GY); ctx.fill();
+  ctx.fillStyle = '#1b1624'; ctx.fillRect(x - 3, GY - 60, 6, 14);
+  line(x, GY - 94, x, GY - 126, '#5a4a38', 3);
+  ctx.fillStyle = ['#4cc9f0', '#ffd166', '#ff6b9c'][C.lvl - 1];
+  ctx.beginPath(); ctx.moveTo(x, GY - 126); ctx.lineTo(x + 24, GY - 118); ctx.lineTo(x, GY - 110); ctx.fill();
+  bar(x, GY - 138 + 2, 70, C.hp / C.max, C.hp / C.max > .5 ? '#6ee7a0' : C.hp / C.max > .25 ? '#ffd166' : '#ff6b6b');
+  if (G.sel === 'castle') { ell(x, GY + 2, 48, 9, null, '#fff', 2); ell(x, GY, 280, 40, 'rgba(255,233,168,.06)', 'rgba(255,233,168,.35)', 1.2); }
+}
+
+function drawDef(d, ghost) {
+  const s = ghost ? { x: d.x, lvl: 1 } : d;
+  ctx.save(); ctx.translate(d.x, GY); ctx.scale(d.side, 1);
+  if (ghost) ctx.globalAlpha = .55;
+  const col = UT[d.type].col, fl = d.flash > 0;
+  const walk = 0;
+  line(-3, -8, -4 + walk, 0, '#1a1a1a', 3); line(3, -8, 4 - walk, 0, '#1a1a1a', 3);
+  if (d.type === 'mage') {
+    ctx.fillStyle = fl ? '#fff' : col; ctx.beginPath(); ctx.moveTo(-8, -4); ctx.lineTo(8, -4); ctx.lineTo(0, -30); ctx.fill();
+    ctx.fillStyle = '#f2c9a0'; ctx.beginPath(); ctx.arc(0, -33, 4.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#4a2c7a'; ctx.beginPath(); ctx.moveTo(-6, -35); ctx.lineTo(6, -35); ctx.lineTo(0, -48); ctx.fill();
+    line(10, -4, 10, -34, '#6b5337', 2.5);
+    const pulse = 4 + Math.sin(G.time * 6 + d.slot) * 1 + (d.swing > 0 ? 2 : 0);
+    ctx.fillStyle = 'rgba(197,139,255,.35)'; ctx.beginPath(); ctx.arc(10, -37, pulse + 4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e9d2ff'; ctx.beginPath(); ctx.arc(10, -37, pulse - 1, 0, 7); ctx.fill();
+  } else {
+    ctx.fillStyle = fl ? '#fff' : col; ctx.fillRect(-6, -27, 12, 20);
+    ctx.fillStyle = '#f2c9a0'; ctx.beginPath(); ctx.arc(0, -32, 5, 0, 7); ctx.fill();
+    if (d.type === 'soldier') {
+      ctx.fillStyle = '#3f5f9a'; ctx.beginPath(); ctx.arc(0, -33, 5.5, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = '#cfd6e6'; ctx.fillRect(6, -26, 5, 17);
+      const a = d.swing > 0 ? .9 : -.6;
+      line(4, -20, 4 + Math.cos(a) * 17, -20 + Math.sin(a) * 17, '#dfe6f2', 2.5);
+    } else {
+      ctx.fillStyle = '#2f7a55'; ctx.beginPath(); ctx.arc(0, -33, 5.5, Math.PI, 0); ctx.fill();
+      ctx.beginPath(); ctx.arc(9, -20, 13, -1.15, 1.15); ctx.lineWidth = 2.2; ctx.strokeStyle = '#8a6b43'; ctx.stroke();
+      const dr = d.swing > 0 ? 3 : 0;
+      line(9 + Math.cos(1.15) * 13 - dr, -20 + Math.sin(1.15) * 13, 9 + Math.cos(-1.15) * 13 - dr, -20 + Math.sin(-1.15) * 13, '#ddd', 1);
+    }
+  }
+  ctx.restore();
+  if (!ghost) {
+    for (let i = 0; i < d.lvl; i++) { ctx.fillStyle = '#ffd166'; ctx.beginPath(); ctx.arc(d.x - (d.lvl - 1) * 4 + i * 8, GY + 11, 2.5, 0, 7); ctx.fill(); }
+    const mh = ustats(d).hp;
+    if (d.hp < mh) bar(d.x, GY - 56, 26, d.hp / mh, '#6ee7a0');
+    if (d === G.sel) {
+      ell(d.x, GY + 2, 22, 7, null, '#fff', 2);
+      const s2 = ustats(d);
+      if (s2.range) ell(d.x, GY, s2.range, 36, 'rgba(110,231,160,.06)', 'rgba(110,231,160,.4)', 1.2);
+    }
+  }
+}
+
+function drawEnemy(e) {
+  const r = e.r, bob = e.atk ? 0 : Math.abs(Math.sin(G.time * 9 + e.id)) * 2;
+  ctx.save(); ctx.translate(e.x, GY - 5 - bob); ctx.scale(-e.side, 1);
+  const sw = e.atk ? 0 : Math.sin(G.time * 10 + e.id) * 4;
+  line(-3, 0, -3 + sw, 7 + bob, '#1a1a1a', 3); line(3, 0, 3 - sw, 7 + bob, '#1a1a1a', 3);
+  ell(0, -r, r * .9, r, e.flash > 0 ? '#fff' : e.col, 'rgba(0,0,0,.45)', 2);
+  ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(r * .35, -r * 1.2, Math.max(1.6, r * .14), 0, 7); ctx.fill();
+  const hit = e.atk && e.cd > e.rate - .18;
+  if (e.type === 'spear') line(0, -r, r + 28, -r - 14, '#d9d2c3', 2);
+  else if (e.type === 'brute') line(r * .5, -r * 1.2, r + 12, -r * 1.2 + (hit ? 16 : -14), '#5a4630', 6);
+  else if (e.type === 'boss') {
+    ctx.fillStyle = '#ffd166'; ctx.beginPath();
+    ctx.moveTo(-r * .6, -r * 2); ctx.lineTo(-r * .4, -r * 2.6); ctx.lineTo(-r * .1, -r * 2.05); ctx.lineTo(r * .2, -r * 2.6); ctx.lineTo(r * .5, -r * 2); ctx.fill();
+    line(r * .6, -r * 1.3, r + 18, -r * 1.3 + (hit ? 22 : -20), '#3a2f3d', 8);
+  } else line(r * .6, -r, r + 10, -r + (hit ? 8 : -8), '#e2e2e2', 2.5);
+  ctx.restore();
+  if (e.hp < e.max || e.type === 'boss') bar(e.x, GY - r * 2 - 14, r * 2.2, e.hp / e.max, '#ff6b6b');
+}
+
+function render() {
+  ctx.drawImage(bg, 0, 0);
+  // titik pos
+  for (const side of [-1, 1]) for (let i = 0; i < SLOTD.length; i++) {
+    const x = CX + side * SLOTD[i], empty = !defAt(side, i);
+    ell(x, GY + 4, 20, 6, empty ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.25)');
+    if (empty && G.build) ell(x, GY + 4, 22, 7, null, G.gold >= UT[G.build].cost ? 'rgba(110,231,160,.7)' : 'rgba(255,107,107,.6)', 1.5);
+  }
+  if (G.build && hover && !defAt(hover.side, hover.i)) {
+    const gd = { type: G.build, side: hover.side, slot: hover.i, x: CX + hover.side * SLOTD[hover.i], lvl: 1, hp: 1, swing: 0, flash: 0 };
+    const rg = UT[G.build].range;
+    if (rg) ell(gd.x, GY, rg, 36, 'rgba(110,231,160,.06)', 'rgba(110,231,160,.4)', 1.2);
+    drawDef(gd, true);
+  }
+  drawCastle();
+  for (const d of G.def) drawDef(d, false);
+  for (const e of G.enemies) drawEnemy(e);
+  for (const p of G.projs) {
+    ctx.fillStyle = p.col; ctx.beginPath(); ctx.arc(p.x, p.y, p.big ? 5 : 3, 0, 7); ctx.fill();
+  }
+  ctx.textAlign = 'center'; ctx.font = 'bold 14px system-ui,sans-serif';
+  for (const f of G.fx) {
+    if (f.ring) { ctx.globalAlpha = Math.max(0, f.t / .25); ell(f.x, f.y, f.ring * (1 - f.t / .25 * .4), f.ring * .35, 'rgba(197,139,255,.25)', f.col, 3); ctx.globalAlpha = 1; }
+    else if (f.line) line(f.x, f.y, f.x2, f.y2, f.col, 2);
+    else { ctx.globalAlpha = Math.min(1, f.t * 2); ctx.fillStyle = f.col; ctx.fillText(f.text, f.x, f.y - (.8 - f.t) * 24); ctx.globalAlpha = 1; }
+  }
+  // penanda arah serbuan
+  if (G.active) {
+    let l = 0, r = 0; for (const q of G.queue) q.side < 0 ? l++ : r++;
+    const a = .4 + .4 * Math.sin(G.time * 8);
+    ctx.fillStyle = `rgba(255,107,107,${a})`;
+    if (l) { ctx.beginPath(); ctx.moveTo(8, GY - 70); ctx.lineTo(30, GY - 56); ctx.lineTo(8, GY - 42); ctx.fill(); }
+    if (r) { ctx.beginPath(); ctx.moveTo(W - 8, GY - 70); ctx.lineTo(W - 30, GY - 56); ctx.lineTo(W - 8, GY - 42); ctx.fill(); }
+  }
+  if (G.banner) {
+    ctx.globalAlpha = Math.min(1, G.banner.t); ctx.fillStyle = '#fff'; ctx.font = 'bold 40px system-ui,sans-serif';
+    ctx.fillText(G.banner.text, CX, 90); ctx.globalAlpha = 1;
+  }
+  const banner = (title, sub, col) => {
+    ctx.fillStyle = 'rgba(8,12,18,.74)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = col; ctx.font = 'bold 54px system-ui,sans-serif'; ctx.fillText(title, CX, H / 2 - 4);
+    ctx.fillStyle = '#e8edf3'; ctx.font = '18px system-ui,sans-serif'; ctx.fillText(sub, CX, H / 2 + 34);
+  };
+  if (G.over) banner('MARKAS JEBOL', 'Kalah di gelombang ' + G.wave + '. Klik untuk main lagi.', '#ff6b6b');
+  else if (G.won) banner('MENANG!', 'Semua ' + MAXWAVE + ' gelombang berhasil ditahan. Klik untuk main lagi.', '#6ee7a0');
+  else if (paused) banner('JEDA', 'Tekan P atau tombol Lanjut', '#4cc9f0');
+}
+
+/* ---------- loop ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now;
+  if (!paused) for (let i = 0; i < speed; i++) update(dt);
+  hud(); render();
+  requestAnimationFrame(frame);
+}
+reset();
+requestAnimationFrame(frame);
+
+// hook kecil untuk pengujian otomatis
+window.__LD = { G, startWave, update, buildAt, upgradeSel, sellSel, castleUpgrade, castleRepair, reset, defAt, UT, ustats, upCost, castleUpCost, SLOTD };
+})();
+</script>
+</body>
+</html>
